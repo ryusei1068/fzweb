@@ -127,7 +127,7 @@ fn cli() -> Command {
                 .long("list")
                 .short('l')
                 .action(ArgAction::SetTrue)
-                .help("List all stored websites interactively (Press 'q' or 'Esc' to close)"),
+                .help("List all stored websites"),
         )
         .arg(
             Arg::new("open")
