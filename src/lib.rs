@@ -1,24 +1,21 @@
 use clap::{Arg, ArgAction, Command};
-use dirs;
-use fuzzy_select::{ContentStyle, FuzzySelect, Stylize, Theme};
-use open;
 use serde::{Deserialize, Serialize};
+use skim::prelude::{Skim, SkimItemReader, SkimItemReaderOption, SkimOptionsBuilder};
 use std::error::Error;
 use std::fs;
+use std::io::Cursor;
 use std::path::Path;
-use tabled::{Table, Tabled};
 
 type MyResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug)]
 pub struct Args {
     open: bool,
-    list: bool,
     add: Option<Vec<String>>,
     del: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Tabled)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Website {
     name: String,
     url: String,
@@ -76,16 +73,6 @@ impl Config {
         }
     }
 
-    fn list_websites(&self) {
-        if self.websites.is_empty() {
-            return;
-        }
-
-        let table = Table::new(&self.websites);
-
-        println!("{}", table);
-    }
-
     fn open_website(&self) {
         let names = self
             .websites
@@ -93,19 +80,14 @@ impl Config {
             .map(|website| website.name.clone())
             .collect();
 
-        let name = match select(names) {
-            Ok(select) => select,
-            Err(_) => return,
-        };
-
-        if let Some(website) = self.websites.iter().find(|w| w.name == name) {
-            match open::that(website.url.clone()) {
-                Ok(_) => {}
-                Err(e) => {
+        if let Ok(name) = select(names) {
+            println!("{} is selected", name);
+            if let Some(website) = self.websites.iter().find(|w| w.name == name) {
+                if let Err(e) = open::that(&website.url) {
                     eprintln!("Failed to open URL: {}", e);
                     std::process::exit(1);
                 }
-            };
+            }
         }
     }
 }
@@ -121,13 +103,6 @@ fn cli() -> Command {
                 .num_args(2)
                 .action(ArgAction::Append)
                 .help("Add a website with a name and URL"),
-        )
-        .arg(
-            Arg::new("list")
-                .long("list")
-                .short('l')
-                .action(ArgAction::SetTrue)
-                .help("List all stored websites"),
         )
         .arg(
             Arg::new("open")
@@ -150,46 +125,44 @@ fn cli() -> Command {
 pub fn get_args() -> MyResult<Args> {
     let matches = cli().get_matches();
 
-    let add_website = matches
-        .get_many::<String>("add")
-        .map(|s| s.map(|s| s.to_string()).collect::<Vec<String>>());
-
-    let del_website = matches.get_one::<String>("del").map(|s| s.clone());
-
     Ok(Args {
-        add: add_website,
-        del: del_website,
+        add: matches
+            .get_many::<String>("add")
+            .map(|s| s.map(ToString::to_string).collect()),
+        del: matches.get_one::<String>("del").cloned(),
         open: matches.get_flag("open"),
-        list: matches.get_flag("list"),
     })
 }
 
 fn select(names: Vec<String>) -> MyResult<String> {
-    let theme = Theme {
-        selected_indicator: '>'.blue().bold(),
-        indicator: ' '.reset(),
-        selected_text: ContentStyle::new(),
-        text: ContentStyle::new(),
-        selected_highlight: ContentStyle::new().dark_cyan().on_dark_grey(),
-        highlight: ContentStyle::new().grey(),
-    };
+    let options = SkimOptionsBuilder::default()
+        .height(String::from("100%"))
+        .no_multi(true)
+        .no_mouse(true)
+        .build()
+        .unwrap();
 
-    match FuzzySelect::new()
-        .with_theme(theme)
-        .with_prompt(">")
-        .with_options(names)
-        .select()
-    {
-        Ok(selection) => Ok(selection),
-        Err(e) => Err(Box::new(e)),
+    let input = names.join("\n");
+
+    let item_reader = SkimItemReader::new(SkimItemReaderOption::default());
+    let items = item_reader.of_bufread(Cursor::new(input));
+    let output = Skim::run_with(&options, Some(items)).ok_or("Selection aborted")?;
+
+    if output.is_abort {
+        return Err("Selection aborted".into());
     }
+    output
+        .selected_items
+        .first()
+        .map(|s| s.output().to_string())
+        .ok_or_else(|| "No selection made".into())
 }
 
 pub fn run(args: Args) -> MyResult<()> {
     let mut config = Config::load();
 
     // init
-    if config.websites.len() == 0 {
+    if config.websites.is_empty() {
         config.save();
     }
 
@@ -208,11 +181,6 @@ pub fn run(args: Args) -> MyResult<()> {
     // open
     if args.open {
         config.open_website();
-    }
-
-    // list
-    if args.list {
-        config.list_websites();
     }
 
     Ok(())
